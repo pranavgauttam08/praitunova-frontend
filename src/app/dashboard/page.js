@@ -1,0 +1,451 @@
+'use client';
+
+import { useState, useEffect, useCallback } from 'react';
+
+const API = 'http://127.0.0.1:8000/api';
+
+/* ─── helpers ─────────────────────────────────────── */
+function authHeaders(token) {
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+}
+
+const STATUS_COLORS = {
+  NEW: { bg: '#1e40af', text: '#93c5fd', label: 'New' },
+  CONTACTED: { bg: '#854d0e', text: '#fde68a', label: 'Contacted' },
+  RESOLVED: { bg: '#065f46', text: '#6ee7b7', label: 'Resolved' },
+};
+
+/* ─── Login Screen ─────────────────────────────────── */
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError]       = useState('');
+  const [loading, setLoading]   = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch(`${API}/admin/token/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!res.ok) throw new Error('Invalid credentials');
+      const data = await res.json();
+      localStorage.setItem('admin_token', data.access);
+      localStorage.setItem('admin_refresh', data.refresh);
+      onLogin(data.access);
+    } catch (err) {
+      setError('Invalid username or password. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div style={{
+      minHeight: '100vh', background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Inter', sans-serif"
+    }}>
+      <div style={{
+        background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.10)',
+        borderRadius: 20, padding: '44px 48px', width: '100%', maxWidth: 420,
+        boxShadow: '0 32px 80px rgba(0,0,0,0.5)'
+      }}>
+        <div style={{ textAlign: 'center', marginBottom: 32 }}>
+          <div style={{
+            width: 56, height: 56, background: 'linear-gradient(135deg,#2563eb,#06b6d4)',
+            borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            margin: '0 auto 16px', fontSize: 24
+          }}>🛡️</div>
+          <h1 style={{ color: '#fff', fontSize: '1.5rem', fontWeight: 700, margin: 0 }}>Admin Portal</h1>
+          <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.85rem', marginTop: 6 }}>Praitunova Infotech</p>
+        </div>
+
+        <form onSubmit={handleSubmit}>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', color: 'rgba(255,255,255,0.6)', fontSize: '0.82rem', marginBottom: 6 }}>Username</label>
+            <input
+              type="text" value={username} onChange={e => setUsername(e.target.value)} required
+              style={{
+                width: '100%', padding: '12px 14px', background: 'rgba(255,255,255,0.07)',
+                border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, color: '#fff',
+                fontSize: '0.9rem', outline: 'none', boxSizing: 'border-box'
+              }}
+            />
+          </div>
+          <div style={{ marginBottom: 24 }}>
+            <label style={{ display: 'block', color: 'rgba(255,255,255,0.6)', fontSize: '0.82rem', marginBottom: 6 }}>Password</label>
+            <input
+              type="password" value={password} onChange={e => setPassword(e.target.value)} required
+              style={{
+                width: '100%', padding: '12px 14px', background: 'rgba(255,255,255,0.07)',
+                border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, color: '#fff',
+                fontSize: '0.9rem', outline: 'none', boxSizing: 'border-box'
+              }}
+            />
+          </div>
+          {error && <p style={{ color: '#f87171', fontSize: '0.83rem', marginBottom: 16, margin: '0 0 16px' }}>{error}</p>}
+          <button type="submit" disabled={loading} style={{
+            width: '100%', padding: '13px', background: 'linear-gradient(135deg,#2563eb,#06b6d4)',
+            border: 'none', borderRadius: 10, color: '#fff', fontWeight: 700,
+            fontSize: '0.95rem', cursor: loading ? 'not-allowed' : 'pointer',
+            opacity: loading ? 0.7 : 1, transition: 'opacity 0.2s'
+          }}>
+            {loading ? 'Signing in…' : 'Sign In →'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Stat Card ─────────────────────────────────────── */
+function StatCard({ icon, label, value, color }) {
+  return (
+    <div style={{
+      background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
+      borderRadius: 14, padding: '22px 24px', display: 'flex', alignItems: 'center', gap: 16
+    }}>
+      <div style={{
+        width: 48, height: 48, borderRadius: 12, background: color + '22',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, flexShrink: 0
+      }}>{icon}</div>
+      <div>
+        <div style={{ color: 'rgba(255,255,255,0.45)', fontSize: '0.78rem', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
+        <div style={{ color: '#fff', fontSize: '1.8rem', fontWeight: 700, lineHeight: 1.1 }}>{value}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Inquiry Row ───────────────────────────────────── */
+function InquiryRow({ inq, onStatusChange, onSelect }) {
+  const s = STATUS_COLORS[inq.status] || STATUS_COLORS.NEW;
+  return (
+    <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', cursor: 'pointer' }}
+        onClick={() => onSelect(inq)}>
+      <td style={{ padding: '14px 16px', color: '#fff', fontWeight: 600 }}>{inq.name}</td>
+      <td style={{ padding: '14px 16px', color: 'rgba(255,255,255,0.6)', fontSize: '0.85rem' }}>{inq.email}</td>
+      <td style={{ padding: '14px 16px', color: 'rgba(255,255,255,0.6)', fontSize: '0.85rem' }}>{inq.service || '—'}</td>
+      <td style={{ padding: '14px 16px', color: 'rgba(255,255,255,0.5)', fontSize: '0.82rem' }}>
+        {new Date(inq.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+      </td>
+      <td style={{ padding: '14px 16px' }} onClick={e => e.stopPropagation()}>
+        <select
+          value={inq.status}
+          onChange={e => onStatusChange(inq.id, e.target.value)}
+          style={{
+            background: s.bg, color: s.text, border: 'none', borderRadius: 6,
+            padding: '4px 10px', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer'
+          }}
+        >
+          <option value="NEW">New</option>
+          <option value="CONTACTED">Contacted</option>
+          <option value="RESOLVED">Resolved</option>
+        </select>
+      </td>
+    </tr>
+  );
+}
+
+/* ─── Detail Modal ──────────────────────────────────── */
+function DetailModal({ inq, onClose }) {
+  if (!inq) return null;
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(6px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 24
+    }} onClick={onClose}>
+      <div style={{
+        background: '#1e293b', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 18,
+        padding: '36px 40px', maxWidth: 560, width: '100%', boxShadow: '0 32px 80px rgba(0,0,0,0.5)'
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
+          <div>
+            <div style={{ color: '#38bdf8', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 4 }}>Inquiry Details</div>
+            <h2 style={{ color: '#fff', fontSize: '1.3rem', fontWeight: 700, margin: 0 }}>{inq.name}</h2>
+          </div>
+          <button onClick={onClose} style={{
+            background: 'rgba(255,255,255,0.08)', border: 'none', borderRadius: 8, width: 34, height: 34,
+            color: '#fff', cursor: 'pointer', fontSize: 16
+          }}>✕</button>
+        </div>
+        {[
+          ['📧 Email', inq.email], ['📞 Phone', inq.phone || 'Not provided'],
+          ['🏢 Company', inq.company || 'Not provided'], ['⚙️ Service', inq.service || 'Not specified'],
+          ['📅 Submitted', new Date(inq.created_at).toLocaleString('en-IN')],
+        ].map(([k, v]) => (
+          <div key={k} style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+            <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.85rem', minWidth: 120 }}>{k}</span>
+            <span style={{ color: 'rgba(255,255,255,0.85)', fontSize: '0.85rem' }}>{v}</span>
+          </div>
+        ))}
+        <div style={{ marginTop: 20, background: 'rgba(255,255,255,0.04)', borderRadius: 10, padding: '14px 16px' }}>
+          <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.78rem', marginBottom: 8 }}>💬 MESSAGE</div>
+          <p style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.9rem', lineHeight: 1.65, margin: 0 }}>{inq.message}</p>
+        </div>
+        <div style={{ marginTop: 20, display: 'flex', gap: 10 }}>
+          <a href={`mailto:${inq.email}`} style={{
+            flex: 1, padding: '11px', background: 'linear-gradient(135deg,#2563eb,#06b6d4)',
+            color: '#fff', borderRadius: 10, textAlign: 'center', textDecoration: 'none',
+            fontWeight: 600, fontSize: '0.88rem'
+          }}>Reply via Email</a>
+          {inq.phone && (
+            <a href={`https://wa.me/${inq.phone.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" style={{
+              flex: 1, padding: '11px', background: '#25D366', color: '#fff',
+              borderRadius: 10, textAlign: 'center', textDecoration: 'none', fontWeight: 600, fontSize: '0.88rem'
+            }}>WhatsApp</a>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Main Dashboard ────────────────────────────────── */
+export default function AdminDashboard() {
+  const [token, setToken]       = useState(null);
+  const [stats, setStats]       = useState(null);
+  const [inquiries, setInquiries] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [search, setSearch]     = useState('');
+  const [filter, setFilter]     = useState('ALL');
+  const [loading, setLoading]   = useState(false);
+  const [tab, setTab]           = useState('inquiries');
+
+  // Restore token from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('admin_token');
+    if (saved) setToken(saved);
+  }, []);
+
+  const fetchData = useCallback(async (tkn) => {
+    if (!tkn) return;
+    setLoading(true);
+    try {
+      const [statsRes, inqRes] = await Promise.all([
+        fetch(`${API}/admin/stats/`,     { headers: authHeaders(tkn) }),
+        fetch(`${API}/admin/inquiries/`, { headers: authHeaders(tkn) }),
+      ]);
+      if (statsRes.status === 401 || inqRes.status === 401) {
+        localStorage.removeItem('admin_token');
+        setToken(null);
+        return;
+      }
+      setStats(await statsRes.json());
+      setInquiries(await inqRes.json());
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { fetchData(token); }, [token, fetchData]);
+
+  async function updateStatus(id, newStatus) {
+    await fetch(`${API}/admin/inquiries/${id}/`, {
+      method: 'PATCH',
+      headers: authHeaders(token),
+      body: JSON.stringify({ status: newStatus }),
+    });
+    setInquiries(prev => prev.map(i => i.id === id ? { ...i, status: newStatus } : i));
+    fetchData(token); // refresh stats
+  }
+
+  function logout() {
+    localStorage.removeItem('admin_token');
+    localStorage.removeItem('admin_refresh');
+    setToken(null);
+  }
+
+  if (!token) return <LoginScreen onLogin={setToken} />;
+
+  const filtered = inquiries.filter(i => {
+    const matchesSearch = search === '' ||
+      i.name.toLowerCase().includes(search.toLowerCase()) ||
+      i.email.toLowerCase().includes(search.toLowerCase()) ||
+      (i.service || '').toLowerCase().includes(search.toLowerCase()) ||
+      (i.company || '').toLowerCase().includes(search.toLowerCase());
+    const matchesFilter = filter === 'ALL' || i.status === filter;
+    return matchesSearch && matchesFilter;
+  });
+
+  const s = { color: 'white', fontFamily: "'Inter', sans-serif" };
+
+  return (
+    <div style={{ ...s, minHeight: '100vh', background: '#0f172a', display: 'flex', flexDirection: 'column' }}>
+      {/* ── TOP NAV ── */}
+      <nav style={{
+        background: 'rgba(255,255,255,0.03)', borderBottom: '1px solid rgba(255,255,255,0.08)',
+        padding: '0 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 64
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{
+            width: 36, height: 36, background: 'linear-gradient(135deg,#2563eb,#06b6d4)',
+            borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18
+          }}>🛡️</div>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>Praitunova Admin</div>
+            <div style={{ color: 'rgba(255,255,255,0.35)', fontSize: '0.7rem' }}>Management Dashboard</div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <button onClick={() => fetchData(token)} style={{
+            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+            borderRadius: 8, padding: '6px 14px', color: 'rgba(255,255,255,0.7)', cursor: 'pointer', fontSize: '0.82rem'
+          }}>🔄 Refresh</button>
+          <button onClick={logout} style={{
+            background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)',
+            borderRadius: 8, padding: '6px 14px', color: '#f87171', cursor: 'pointer', fontSize: '0.82rem'
+          }}>Sign Out</button>
+        </div>
+      </nav>
+
+      <div style={{ display: 'flex', flex: 1 }}>
+        {/* ── SIDEBAR ── */}
+        <aside style={{
+          width: 220, background: 'rgba(255,255,255,0.02)', borderRight: '1px solid rgba(255,255,255,0.06)',
+          padding: '24px 16px', flexShrink: 0
+        }}>
+          {[
+            { id: 'inquiries', icon: '📬', label: 'Inquiries' },
+            { id: 'stats',     icon: '📊', label: 'Analytics' },
+            { id: 'settings',  icon: '⚙️',  label: 'Settings' },
+          ].map(item => (
+            <button key={item.id} onClick={() => setTab(item.id)} style={{
+              display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '10px 14px',
+              background: tab === item.id ? 'rgba(37,99,235,0.2)' : 'transparent',
+              border: tab === item.id ? '1px solid rgba(37,99,235,0.4)' : '1px solid transparent',
+              borderRadius: 10, color: tab === item.id ? '#93c5fd' : 'rgba(255,255,255,0.5)',
+              cursor: 'pointer', fontSize: '0.88rem', fontWeight: tab === item.id ? 600 : 400, marginBottom: 4,
+              textAlign: 'left'
+            }}>
+              <span>{item.icon}</span> {item.label}
+            </button>
+          ))}
+          <div style={{ marginTop: 'auto', paddingTop: 24, borderTop: '1px solid rgba(255,255,255,0.06)', marginTop: 24 }}>
+            <a href="http://127.0.0.1:8000/admin/" target="_blank" rel="noopener noreferrer" style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px',
+              background: 'transparent', color: 'rgba(255,255,255,0.4)', fontSize: '0.82rem', textDecoration: 'none'
+            }}>🔗 Django Admin</a>
+          </div>
+        </aside>
+
+        {/* ── MAIN CONTENT ── */}
+        <main style={{ flex: 1, padding: '32px', overflowY: 'auto' }}>
+
+          {/* STATS ROW */}
+          {stats && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 32 }}>
+              <StatCard icon="📬" label="Total Inquiries" value={stats.total} color="#2563eb" />
+              <StatCard icon="🆕" label="New"             value={stats.new}   color="#38bdf8" />
+              <StatCard icon="📞" label="Contacted"       value={stats.contacted} color="#f59e0b" />
+              <StatCard icon="✅" label="Resolved"        value={stats.resolved}  color="#10b981" />
+            </div>
+          )}
+
+          {/* TAB: INQUIRIES */}
+          {tab === 'inquiries' && (
+            <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 16 }}>
+              {/* Table Header */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '20px 24px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                <h2 style={{ color: '#fff', fontSize: '1rem', fontWeight: 700, margin: 0, flex: 1 }}>
+                  Client Inquiries <span style={{ color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>({filtered.length})</span>
+                </h2>
+                <input
+                  type="text" placeholder="Search name, email, service…" value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  style={{
+                    background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: 8, padding: '8px 14px', color: '#fff', fontSize: '0.83rem',
+                    outline: 'none', width: 220
+                  }}
+                />
+                <select value={filter} onChange={e => setFilter(e.target.value)} style={{
+                  background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: 8, padding: '8px 12px', color: '#fff', fontSize: '0.83rem', cursor: 'pointer'
+                }}>
+                  <option value="ALL">All Status</option>
+                  <option value="NEW">New</option>
+                  <option value="CONTACTED">Contacted</option>
+                  <option value="RESOLVED">Resolved</option>
+                </select>
+              </div>
+
+              {loading ? (
+                <div style={{ textAlign: 'center', padding: 48, color: 'rgba(255,255,255,0.3)' }}>Loading…</div>
+              ) : filtered.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: 48, color: 'rgba(255,255,255,0.3)' }}>No inquiries found.</div>
+              ) : (
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ background: 'rgba(255,255,255,0.03)' }}>
+                      {['Name','Email','Service','Date','Status'].map(h => (
+                        <th key={h} style={{ padding: '12px 16px', color: 'rgba(255,255,255,0.35)', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: 'left', fontWeight: 600 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map(inq => (
+                      <InquiryRow key={inq.id} inq={inq} onStatusChange={updateStatus} onSelect={setSelected} />
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
+
+          {/* TAB: ANALYTICS */}
+          {tab === 'stats' && stats && (
+            <div>
+              <h2 style={{ color: '#fff', marginBottom: 24 }}>Analytics Overview</h2>
+              <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 16, padding: 28 }}>
+                <h3 style={{ color: 'rgba(255,255,255,0.6)', fontSize: '0.85rem', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 20 }}>Inquiries by Service</h3>
+                {stats.by_service.map((item, i) => {
+                  const pct = stats.total > 0 ? Math.round((item.count / stats.total) * 100) : 0;
+                  return (
+                    <div key={i} style={{ marginBottom: 16 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                        <span style={{ color: 'rgba(255,255,255,0.75)', fontSize: '0.85rem' }}>{item.service || 'Unspecified'}</span>
+                        <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.82rem' }}>{item.count} ({pct}%)</span>
+                      </div>
+                      <div style={{ height: 6, background: 'rgba(255,255,255,0.08)', borderRadius: 4, overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${pct}%`, background: 'linear-gradient(90deg,#2563eb,#06b6d4)', borderRadius: 4, transition: 'width 0.6s ease' }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* TAB: SETTINGS */}
+          {tab === 'settings' && (
+            <div>
+              <h2 style={{ color: '#fff', marginBottom: 24 }}>Settings</h2>
+              <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 16, padding: 28 }}>
+                {[
+                  ['Notification Email', 'pgkijai301@gmail.com'],
+                  ['Admin API URL', 'http://127.0.0.1:8000/api/'],
+                  ['Django Admin', 'http://127.0.0.1:8000/admin/'],
+                  ['Database', 'SQLite (local) → PostgreSQL (production)'],
+                  ['Rate Limiting', '10 submissions / day / IP'],
+                  ['Auth Method', 'JWT Bearer Token (djangorestframework-simplejwt)'],
+                ].map(([k, v]) => (
+                  <div key={k} style={{ display: 'flex', gap: 24, padding: '14px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                    <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.85rem', minWidth: 180 }}>{k}</span>
+                    <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.85rem' }}>{v}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </main>
+      </div>
+
+      {/* Detail modal */}
+      {selected && <DetailModal inq={selected} onClose={() => setSelected(null)} />}
+    </div>
+  );
+}
