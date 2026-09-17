@@ -2,7 +2,9 @@
 'use client';
 
 import { useEffect } from 'react';
+import Image from 'next/image';
 import './globals.css';
+import { API_BASE_URL } from '../lib/api';
 
 // ── Service Modal Data ──────────────────────────────────────────────────────
 const SERVICE_DATA = {
@@ -154,26 +156,41 @@ export default function Home() {
     window.addEventListener('scroll', handleScroll, { passive: true });
     handleScroll();
 
-    // Mobile menu
+    // Mobile menu — the hamburger has a fully-built CSS animation to morph
+    // into an "X" (.hamburger.open span:nth-child(...)), and sits at a
+    // higher z-index than the menu overlay so it stays clickable on top,
+    // but nothing ever toggled it: the old code only ever called
+    // openMenu() and looked for a '#mobile-close-btn' that doesn't exist
+    // in the markup. Net effect: once opened, the menu had no way to
+    // close except tapping the unlabeled dark overlay background. Wired
+    // the hamburger as a real open/close toggle instead.
     const toggle = document.getElementById('hamburger-btn');
     const menu = document.querySelector('.mobile-menu');
-    const closeBtn = document.getElementById('mobile-close-btn');
-    
+
     const closeMenu = () => {
       menu?.classList.remove('open');
+      toggle?.classList.remove('open');
       document.body.classList.remove('no-scroll');
       toggle?.setAttribute('aria-expanded', 'false');
     };
 
-    toggle?.addEventListener('click', () => {
+    const openMenu = () => {
       menu?.classList.add('open');
+      toggle?.classList.add('open');
       document.body.classList.add('no-scroll');
-      toggle.setAttribute('aria-expanded', 'true');
-    });
+      toggle?.setAttribute('aria-expanded', 'true');
+    };
 
-    closeBtn?.addEventListener('click', closeMenu);
-    menu?.querySelectorAll('a').forEach(a => a.addEventListener('click', closeMenu));
-    menu?.addEventListener('click', e => { if (e.target === menu) closeMenu(); });
+    const toggleMenu = () => {
+      if (menu?.classList.contains('open')) closeMenu(); else openMenu();
+    };
+
+    const menuLinks = menu ? Array.from(menu.querySelectorAll('a')) : [];
+    const closeOnOverlayClick = e => { if (e.target === menu) closeMenu(); };
+
+    toggle?.addEventListener('click', toggleMenu);
+    menuLinks.forEach(a => a.addEventListener('click', closeMenu));
+    menu?.addEventListener('click', closeOnOverlayClick);
 
     // Animate on scroll
     const elements = document.querySelectorAll('.animate-on-scroll');
@@ -191,7 +208,7 @@ export default function Home() {
     const form = document.getElementById('contact-form');
     let submitCount = 0;
 
-    form?.addEventListener('submit', async function (e) {
+    const handleSubmit = async function (e) {
       e.preventDefault();
       if (submitCount >= 3) return;
       
@@ -207,10 +224,11 @@ export default function Home() {
         company: form.querySelector('#contact-company')?.value,
         service: form.querySelector('#contact-service')?.value,
         message: form.querySelector('#contact-message')?.value,
+        website: form.querySelector('#contact-website')?.value || '',
       };
 
       try {
-        const response = await fetch('http://localhost:8000/api/contact/', {
+        const response = await fetch(`${API_BASE_URL}/contact/`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -237,21 +255,150 @@ export default function Home() {
           btn.innerHTML = 'Network Error.';
           setTimeout(() => { btn.innerHTML = originalHTML; btn.disabled = false; }, 2000);
       }
-    });
+    };
+    form?.addEventListener('submit', handleSubmit);
 
     // Modal wiring
     const modalCloseBtn = document.getElementById('svc-modal-close');
     const modalOverlay  = document.getElementById('svc-modal-overlay');
     const handleEsc = (e) => { if (e.key === 'Escape') closeSvcModal(); };
+    const closeOnModalOverlayClick = (e) => { if (e.target === modalOverlay) closeSvcModal(); };
 
     modalCloseBtn?.addEventListener('click', closeSvcModal);
-    modalOverlay?.addEventListener('click', (e) => { if (e.target === modalOverlay) closeSvcModal(); });
+    modalOverlay?.addEventListener('click', closeOnModalOverlayClick);
     document.addEventListener('keydown', handleEsc);
+
+    // FAQ accordion — the CSS (.faq-item.open) was fully built but nothing
+    // ever toggled the class, so every answer was permanently hidden.
+    const faqItems = Array.from(document.querySelectorAll('.faq-item'));
+    const faqHandlers = faqItems.map(item => {
+      const question = item.querySelector('.faq-question');
+      const handler = () => {
+        const isOpen = item.classList.contains('open');
+        faqItems.forEach(i => i.classList.remove('open'));
+        if (!isOpen) item.classList.add('open');
+      };
+      question?.addEventListener('click', handler);
+      return { question, handler };
+    });
+
+    // Testimonials carousel — prev/next/dots existed with no wiring, so
+    // the track never moved and only the first testimonial was ever
+    // reachable.
+    const track = document.querySelector('.testimonials-track');
+    const slides = document.querySelectorAll('.testimonial-slide');
+    const dots = Array.from(document.querySelectorAll('.carousel-dot'));
+    const prevBtn = document.querySelector('.carousel-btn.prev');
+    const nextBtn = document.querySelector('.carousel-btn.next');
+    let currentSlide = 0;
+
+    const goToSlide = (index) => {
+      if (!slides.length) return;
+      currentSlide = (index + slides.length) % slides.length;
+      if (track) track.style.transform = `translateX(-${currentSlide * 100}%)`;
+      dots.forEach((dot, i) => dot.classList.toggle('active', i === currentSlide));
+    };
+    const handlePrev = () => goToSlide(currentSlide - 1);
+    const handleNext = () => goToSlide(currentSlide + 1);
+    const dotHandlers = dots.map((dot, i) => {
+      const handler = () => goToSlide(i);
+      dot.addEventListener('click', handler);
+      return { dot, handler };
+    });
+    prevBtn?.addEventListener('click', handlePrev);
+    nextBtn?.addEventListener('click', handleNext);
+
+    // Newsletter form — had no submit handler at all, so clicking
+    // "Subscribe" fell through to a native form submit (page reload, email
+    // leaked into the URL as a GET query string). Route it through the
+    // same contact endpoint as a tagged lead instead of building a whole
+    // separate subscriber system.
+    const newsletterForm = document.getElementById('newsletter-form');
+    const handleNewsletterSubmit = async (e) => {
+      e.preventDefault();
+      const input = newsletterForm.querySelector('.newsletter-input');
+      const btn = newsletterForm.querySelector('.newsletter-btn');
+      const email = input?.value;
+      if (!email) return;
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Subscribing...';
+      try {
+        const response = await fetch(`${API_BASE_URL}/contact/`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Newsletter Subscriber',
+            email,
+            service: 'Newsletter Subscription',
+            message: `Newsletter signup from footer form: ${email}`,
+          }),
+        });
+        btn.textContent = response.ok ? 'Subscribed!' : 'Error. Try again.';
+        if (response.ok) newsletterForm.reset();
+      } catch {
+        btn.textContent = 'Network error.';
+      } finally {
+        setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 2500);
+      }
+    };
+    newsletterForm?.addEventListener('submit', handleNewsletterSubmit);
+
+    // Scroll-to-top button — CSS had a .visible state (opacity/transform)
+    // and a click cursor, but nothing ever toggled it or scrolled on
+    // click, so it sat permanently invisible.
+    const scrollTopBtn = document.getElementById('scroll-top-btn');
+    const handleScrollTopVisibility = () => {
+      scrollTopBtn?.classList.toggle('visible', window.scrollY > 500);
+    };
+    const handleScrollTopClick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.addEventListener('scroll', handleScrollTopVisibility, { passive: true });
+    scrollTopBtn?.addEventListener('click', handleScrollTopClick);
+    handleScrollTopVisibility();
+
+    // Cookie consent banner — same story: built with .visible/.hidden CSS
+    // states and Accept/Decline buttons, never shown or wired to anything.
+    const cookieBanner = document.getElementById('cookie-banner');
+    const cookieAcceptBtn = document.getElementById('cookie-accept-btn');
+    const cookieDeclineBtn = document.getElementById('cookie-decline-btn');
+    let cookieShowTimer;
+    const dismissCookieBanner = (choice) => {
+      try { localStorage.setItem('cookie_consent', choice); } catch { /* ignore */ }
+      cookieBanner?.classList.remove('visible');
+      setTimeout(() => cookieBanner?.classList.add('hidden'), 500);
+    };
+    const handleCookieAccept = () => dismissCookieBanner('accepted');
+    const handleCookieDecline = () => dismissCookieBanner('declined');
+    let storedConsent = null;
+    try { storedConsent = localStorage.getItem('cookie_consent'); } catch { /* ignore */ }
+    if (storedConsent) {
+      cookieBanner?.classList.add('hidden');
+    } else {
+      cookieShowTimer = setTimeout(() => cookieBanner?.classList.add('visible'), 1200);
+    }
+    cookieAcceptBtn?.addEventListener('click', handleCookieAccept);
+    cookieDeclineBtn?.addEventListener('click', handleCookieDecline);
 
     return () => {
       window.removeEventListener('scroll', handleScroll);
+      toggle?.removeEventListener('click', toggleMenu);
+      menuLinks.forEach(a => a.removeEventListener('click', closeMenu));
+      menu?.removeEventListener('click', closeOnOverlayClick);
+      observer.disconnect();
+      form?.removeEventListener('submit', handleSubmit);
       modalCloseBtn?.removeEventListener('click', closeSvcModal);
+      modalOverlay?.removeEventListener('click', closeOnModalOverlayClick);
       document.removeEventListener('keydown', handleEsc);
+      faqHandlers.forEach(({ question, handler }) => question?.removeEventListener('click', handler));
+      prevBtn?.removeEventListener('click', handlePrev);
+      nextBtn?.removeEventListener('click', handleNext);
+      dotHandlers.forEach(({ dot, handler }) => dot.removeEventListener('click', handler));
+      newsletterForm?.removeEventListener('submit', handleNewsletterSubmit);
+      window.removeEventListener('scroll', handleScrollTopVisibility);
+      scrollTopBtn?.removeEventListener('click', handleScrollTopClick);
+      clearTimeout(cookieShowTimer);
+      cookieAcceptBtn?.removeEventListener('click', handleCookieAccept);
+      cookieDeclineBtn?.removeEventListener('click', handleCookieDecline);
     };
   }, []);
 
@@ -278,7 +425,7 @@ export default function Home() {
     <div className="nav-wrapper">
       {/*  Logo  */}
       <a href="#hero" className="nav-logo" aria-label="Praitunova Infotech Home">
-        <img src="assets/logo.jpeg" alt="Praitunova Infotech Logo" className="nav-logo-icon" style={{'background': "transparent", 'borderRadius': "0", 'width': "64px", 'height': "64px", 'objectFit': "contain"}} loading="eager" />
+        <Image src="/assets/logo.jpeg" alt="Praitunova Infotech Logo" width={64} height={64} className="nav-logo-icon" style={{'background': "transparent", 'borderRadius': "0", 'width': "64px", 'height': "64px", 'objectFit': "contain"}} priority />
         <div>
           <div className="nav-logo-text">Praitunova Infotech</div>
           <div className="nav-logo-sub">Technology &amp; Talent</div>
@@ -297,7 +444,7 @@ export default function Home() {
 
       {/*  CTA + Hamburger  */}
       <div className="nav-right">
-        <a href="#contact" className="nav-links a nav-cta" id="nav-quote-btn" style={{'display': "inline-flex", 'alignItems': "center", 'gap': "6px", 'padding': "10px 20px", 'background': "linear-gradient(135deg,#2563EB,#06B6D4)", 'color': "#fff", 'borderRadius': "10px", 'fontWeight': "600", 'fontSize': "0.88rem", 'fontFamily': "'Inter',sans-serif", 'textDecoration': "none", 'transition': "all .3s ease"}}>
+        <a href="#contact" className="nav-cta" id="nav-quote-btn" style={{'display': "inline-flex", 'alignItems': "center", 'gap': "6px", 'padding': "10px 20px", 'background': "linear-gradient(135deg,#2563EB,#06B6D4)", 'color': "#fff", 'borderRadius': "10px", 'fontWeight': "600", 'fontSize': "0.88rem", 'fontFamily': "var(--font-body)", 'textDecoration': "none", 'transition': "all .3s ease"}}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           Get Quote
         </a>
@@ -317,7 +464,6 @@ export default function Home() {
   <a href="#services">Services</a>
   <a href="#industries">Industries</a>
   <a href="#technologies">Technologies</a>
-  <a href="#case-studies">Case Studies</a>
   <a href="#careers">Careers</a>
   <a href="#contact">Contact</a>
   <a href="#contact" className="btn btn-primary" style={{'marginTop': "16px"}}>Get Free Quote</a>
@@ -366,15 +512,15 @@ export default function Home() {
 
         <div className="hero-stats">
           <div className="hero-stat-item">
-            <div className="trust-number" style={{'fontFamily': "'Space Grotesk',sans-serif", 'fontSize': "1.8rem", 'fontWeight': "700", 'color': "#fff", 'lineHeight': "1"}}>500<span style={{'background': "linear-gradient(135deg,#38BDF8,#06B6D4)", 'WebkitBackgroundClip': "text", 'WebkitTextFillColor': "transparent"}}>+</span></div>
+            <div className="trust-number" style={{'fontFamily': "var(--font-number)", 'fontSize': "1.8rem", 'fontWeight': "700", 'color': "#fff", 'lineHeight': "1"}}>500<span style={{'background': "linear-gradient(135deg,#38BDF8,#06B6D4)", 'WebkitBackgroundClip': "text", 'WebkitTextFillColor': "transparent"}}>+</span></div>
             <div className="stat-label" style={{'fontSize': "0.8rem", 'color': "rgba(255,255,255,0.45)", 'marginTop': "4px"}}>Projects</div>
           </div>
           <div className="hero-stat-item">
-            <div className="trust-number" style={{'fontFamily': "'Space Grotesk',sans-serif", 'fontSize': "1.8rem", 'fontWeight': "700", 'color': "#fff", 'lineHeight': "1"}}>300<span style={{'background': "linear-gradient(135deg,#38BDF8,#06B6D4)", 'WebkitBackgroundClip': "text", 'WebkitTextFillColor': "transparent"}}>+</span></div>
+            <div className="trust-number" style={{'fontFamily': "var(--font-number)", 'fontSize': "1.8rem", 'fontWeight': "700", 'color': "#fff", 'lineHeight': "1"}}>300<span style={{'background': "linear-gradient(135deg,#38BDF8,#06B6D4)", 'WebkitBackgroundClip': "text", 'WebkitTextFillColor': "transparent"}}>+</span></div>
             <div className="stat-label" style={{'fontSize': "0.8rem", 'color': "rgba(255,255,255,0.45)", 'marginTop': "4px"}}>Clients</div>
           </div>
           <div className="hero-stat-item">
-            <div className="trust-number" style={{'fontFamily': "'Space Grotesk',sans-serif", 'fontSize': "1.8rem", 'fontWeight': "700", 'color': "#fff", 'lineHeight': "1"}}>15<span style={{'background': "linear-gradient(135deg,#38BDF8,#06B6D4)", 'WebkitBackgroundClip': "text", 'WebkitTextFillColor': "transparent"}}>+</span></div>
+            <div className="trust-number" style={{'fontFamily': "var(--font-number)", 'fontSize': "1.8rem", 'fontWeight': "700", 'color': "#fff", 'lineHeight': "1"}}>15<span style={{'background': "linear-gradient(135deg,#38BDF8,#06B6D4)", 'WebkitBackgroundClip': "text", 'WebkitTextFillColor': "transparent"}}>+</span></div>
             <div className="stat-label" style={{'fontSize': "0.8rem", 'color': "rgba(255,255,255,0.45)", 'marginTop': "4px"}}>Industries</div>
           </div>
         </div>
@@ -730,7 +876,7 @@ export default function Home() {
 
         {/*  Floating badge  */}
         <div className="about-badge">
-          <div className="badge-number" style={{'fontFamily': "'Space Grotesk',sans-serif"}}>8+</div>
+          <div className="badge-number" style={{'fontFamily': "var(--font-number)"}}>8+</div>
           <div className="badge-text">Years of Excellence</div>
         </div>
 
@@ -738,7 +884,7 @@ export default function Home() {
         <div className="about-exp-badge">
           <span style={{'fontSize': "1.3rem"}}>🏆</span>
           <div>
-            <div style={{'fontSize': "0.82rem", 'fontWeight': "700", 'color': "#0F172A", 'fontFamily': "'Poppins',sans-serif"}}>Award Winning</div>
+            <div style={{'fontSize': "0.82rem", 'fontWeight': "700", 'color': "#0F172A", 'fontFamily': "var(--font-heading)"}}>Award Winning</div>
             <div style={{'fontSize': "0.72rem", 'color': "#64748B"}}>Technology Company</div>
           </div>
         </div>
@@ -1302,7 +1448,7 @@ export default function Home() {
           Schedule Free Consultation
           <svg className="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
         </a>
-        <a href="tel:+911234567890" className="btn btn-outline-white btn-lg" id="cta-call-btn">
+        <a href="tel:+919082110849" className="btn btn-outline-white btn-lg" id="cta-call-btn">
           📞 Call Us Now
         </a>
       </div>
@@ -1471,96 +1617,6 @@ export default function Home() {
 </section>
 
 {/*  =============================================
-     CASE STUDIES
-=============================================  */}
-<section id="case-studies" className="section-padding" aria-label="Case Studies">
-  <div className="container">
-    <div className="section-header center animate-on-scroll animate-fade-up">
-      <div className="section-tag"><span className="tag-dot"></span>Case Studies</div>
-      <h2 className="section-title">Real Results for <span>Real Businesses</span></h2>
-      <p className="section-subtitle">See how we've helped leading enterprises overcome complex challenges and achieve measurable outcomes through technology.</p>
-    </div>
-
-    <div className="case-studies-grid">
-      {/*  Case Study 1  */}
-      <div className="case-card animate-on-scroll animate-fade-up delay-100" id="case-study-1">
-        <div className="case-card-header">
-          <div className="case-industry-tag">🏥 Healthcare</div>
-          <h3>Hospital Network Digital Transformation</h3>
-        </div>
-        <div className="case-card-body">
-          <div className="case-meta">
-            <div className="case-meta-item">
-              <label>Problem</label>
-              <p>Fragmented patient data across 12 hospitals with no unified digital system.</p>
-            </div>
-            <div className="case-meta-item">
-              <label>Solution</label>
-              <p>Enterprise EHR platform with AI-powered diagnostics and cloud infrastructure.</p>
-            </div>
-          </div>
-          <div className="case-outcome">
-            <label>✅ Outcome</label>
-            <p>40% reduction in admin time, 60% faster patient data retrieval, ₹2Cr cost savings annually.</p>
-          </div>
-          <a href="#contact" className="btn btn-outline btn-sm" id="case1-read-more">Read Full Case Study →</a>
-        </div>
-      </div>
-
-      {/*  Case Study 2  */}
-      <div className="case-card animate-on-scroll animate-fade-up delay-200" id="case-study-2">
-        <div className="case-card-header">
-          <div className="case-industry-tag">🏭 Manufacturing</div>
-          <h3>Smart Factory Automation &amp; IoT Integration</h3>
-        </div>
-        <div className="case-card-body">
-          <div className="case-meta">
-            <div className="case-meta-item">
-              <label>Problem</label>
-              <p>Manual production tracking causing 25% downtime and quality control failures.</p>
-            </div>
-            <div className="case-meta-item">
-              <label>Solution</label>
-              <p>IoT sensor network, real-time monitoring dashboard, and predictive maintenance AI.</p>
-            </div>
-          </div>
-          <div className="case-outcome">
-            <label>✅ Outcome</label>
-            <p>35% increase in production efficiency, 80% reduction in unplanned downtime, ROI in 8 months.</p>
-          </div>
-          <a href="#contact" className="btn btn-outline btn-sm" id="case2-read-more">Read Full Case Study →</a>
-        </div>
-      </div>
-
-      {/*  Case Study 3  */}
-      <div className="case-card animate-on-scroll animate-fade-up delay-300" id="case-study-3">
-        <div className="case-card-header">
-          <div className="case-industry-tag">💰 Finance</div>
-          <h3>Core Banking System Modernization</h3>
-        </div>
-        <div className="case-card-body">
-          <div className="case-meta">
-            <div className="case-meta-item">
-              <label>Problem</label>
-              <p>Legacy mainframe banking system unable to support digital banking demands.</p>
-            </div>
-            <div className="case-meta-item">
-              <label>Solution</label>
-              <p>Cloud-native microservices architecture with real-time payment processing and API banking.</p>
-            </div>
-          </div>
-          <div className="case-outcome">
-            <label>✅ Outcome</label>
-            <p>10x transaction throughput, 99.99% uptime, 50% infrastructure cost reduction post-migration.</p>
-          </div>
-          <a href="#contact" className="btn btn-outline btn-sm" id="case3-read-more">Read Full Case Study →</a>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-{/*  =============================================
      TESTIMONIALS
 =============================================  */}
 <section id="testimonials" className="section-padding" aria-label="Client testimonials">
@@ -1568,7 +1624,7 @@ export default function Home() {
     <div className="section-header center animate-on-scroll animate-fade-up">
       <div className="section-tag"><span className="tag-dot"></span>Testimonials</div>
       <h2 className="section-title">What Our <span>Clients Say</span></h2>
-      <p className="section-subtitle">Trusted by 300+ enterprises globally — here's what industry leaders say about partnering with Praitunova Infotech.</p>
+      <p className="section-subtitle">Trusted by 300+ enterprises globally — here&apos;s what industry leaders say about partnering with Praitunova Infotech.</p>
     </div>
 
     <div className="testimonials-wrapper animate-on-scroll animate-fade-up delay-200">
@@ -1576,11 +1632,11 @@ export default function Home() {
         {/*  Testimonial 1  */}
         <div className="testimonial-slide">
           <div className="testimonial-card">
-            <div className="testimonial-quote-icon">"</div>
+            <div className="testimonial-quote-icon">&quot;</div>
             <div className="testimonial-stars">
               <span>★</span><span>★</span><span>★</span><span>★</span><span>★</span>
             </div>
-            <p className="testimonial-text">"Praitunova Infotech transformed our entire IT infrastructure within 6 months. Their team's technical depth and professionalism is unmatched. We've seen a 45% reduction in operational costs and our systems are more reliable than ever."</p>
+            <p className="testimonial-text">&quot;Praitunova Infotech transformed our entire IT infrastructure within 6 months. Their team&apos;s technical depth and professionalism is unmatched. We&apos;ve seen a 45% reduction in operational costs and our systems are more reliable than ever.&quot;</p>
             <div className="testimonial-author">
               <div className="testimonial-avatar">RK</div>
               <div className="testimonial-author-info">
@@ -1594,11 +1650,11 @@ export default function Home() {
         {/*  Testimonial 2  */}
         <div className="testimonial-slide">
           <div className="testimonial-card">
-            <div className="testimonial-quote-icon">"</div>
+            <div className="testimonial-quote-icon">&quot;</div>
             <div className="testimonial-stars">
               <span>★</span><span>★</span><span>★</span><span>★</span><span>★</span>
             </div>
-            <p className="testimonial-text">"The AI solution developed by Praitunova Infotech has completely changed how we do demand forecasting. Their team understood our business deeply and delivered a solution that exceeded every expectation we had."</p>
+            <p className="testimonial-text">&quot;The AI solution developed by Praitunova Infotech has completely changed how we do demand forecasting. Their team understood our business deeply and delivered a solution that exceeded every expectation we had.&quot;</p>
             <div className="testimonial-author">
               <div className="testimonial-avatar">PS</div>
               <div className="testimonial-author-info">
@@ -1612,11 +1668,11 @@ export default function Home() {
         {/*  Testimonial 3  */}
         <div className="testimonial-slide">
           <div className="testimonial-card">
-            <div className="testimonial-quote-icon">"</div>
+            <div className="testimonial-quote-icon">&quot;</div>
             <div className="testimonial-stars">
               <span>★</span><span>★</span><span>★</span><span>★</span><span>★</span>
             </div>
-            <p className="testimonial-text">"Outstanding cloud migration execution. Praitunova Infotech moved our entire on-premise setup to AWS with zero downtime over a weekend. Their project management and communication throughout was exemplary."</p>
+            <p className="testimonial-text">&quot;Outstanding cloud migration execution. Praitunova Infotech moved our entire on-premise setup to AWS with zero downtime over a weekend. Their project management and communication throughout was exemplary.&quot;</p>
             <div className="testimonial-author">
               <div className="testimonial-avatar">AM</div>
               <div className="testimonial-author-info">
@@ -1630,11 +1686,11 @@ export default function Home() {
         {/*  Testimonial 4  */}
         <div className="testimonial-slide">
           <div className="testimonial-card">
-            <div className="testimonial-quote-icon">"</div>
+            <div className="testimonial-quote-icon">&quot;</div>
             <div className="testimonial-stars">
               <span>★</span><span>★</span><span>★</span><span>★</span><span>★</span>
             </div>
-            <p className="testimonial-text">"Their workforce management solutions are top-notch. They staffed our entire logistics operation within 2 weeks during peak season. The quality of professionals they provide is consistently excellent."</p>
+            <p className="testimonial-text">&quot;Their workforce management solutions are top-notch. They staffed our entire logistics operation within 2 weeks during peak season. The quality of professionals they provide is consistently excellent.&quot;</p>
             <div className="testimonial-author">
               <div className="testimonial-avatar">SJ</div>
               <div className="testimonial-author-info">
@@ -1648,11 +1704,11 @@ export default function Home() {
         {/*  Testimonial 5  */}
         <div className="testimonial-slide">
           <div className="testimonial-card">
-            <div className="testimonial-quote-icon">"</div>
+            <div className="testimonial-quote-icon">&quot;</div>
             <div className="testimonial-stars">
               <span>★</span><span>★</span><span>★</span><span>★</span><span>★</span>
             </div>
-            <p className="testimonial-text">"We've been working with Praitunova Infotech for 4 years. They're not just a vendor — they're a strategic technology partner. Their proactive approach to identifying improvements in our systems is invaluable."</p>
+            <p className="testimonial-text">&quot;We&apos;ve been working with Praitunova Infotech for 4 years. They&apos;re not just a vendor — they&apos;re a strategic technology partner. Their proactive approach to identifying improvements in our systems is invaluable.&quot;</p>
             <div className="testimonial-author">
               <div className="testimonial-avatar">VR</div>
               <div className="testimonial-author-info">
@@ -1684,49 +1740,6 @@ export default function Home() {
 </section>
 
 {/*  =============================================
-     CLIENTS SECTION
-=============================================  */}
-<section id="clients" className="section-padding-sm" aria-label="Our clients">
-  <div className="container">
-    <div className="section-header center animate-on-scroll animate-fade-up" style={{'marginBottom': "40px"}}>
-      <div className="section-tag"><span className="tag-dot"></span>Trusted By</div>
-      <h2 className="section-title">Our <span>Valued Clients</span></h2>
-    </div>
-  </div>
-
-  <div className="clients-marquee-wrapper animate-on-scroll animate-fade-up delay-200">
-    <div className="clients-marquee">
-      {/*  Set 1  */}
-      <div className="client-logo-item"><span>TechVision</span></div>
-      <div className="client-logo-item"><span>MedCare</span></div>
-      <div className="client-logo-item"><span>RetailMax</span></div>
-      <div className="client-logo-item"><span>FinSecure</span></div>
-      <div className="client-logo-item"><span>BuildTech</span></div>
-      <div className="client-logo-item"><span>FastMove</span></div>
-      <div className="client-logo-item"><span>EduPrime</span></div>
-      <div className="client-logo-item"><span>GreenPower</span></div>
-      <div className="client-logo-item"><span>AutoDrive</span></div>
-      <div className="client-logo-item"><span>TeleConnect</span></div>
-      <div className="client-logo-item"><span>HospitalityPro</span></div>
-      <div className="client-logo-item"><span>DataVault</span></div>
-      {/*  Set 2 (clone for seamless loop)  */}
-      <div className="client-logo-item"><span>TechVision</span></div>
-      <div className="client-logo-item"><span>MedCare</span></div>
-      <div className="client-logo-item"><span>RetailMax</span></div>
-      <div className="client-logo-item"><span>FinSecure</span></div>
-      <div className="client-logo-item"><span>BuildTech</span></div>
-      <div className="client-logo-item"><span>FastMove</span></div>
-      <div className="client-logo-item"><span>EduPrime</span></div>
-      <div className="client-logo-item"><span>GreenPower</span></div>
-      <div className="client-logo-item"><span>AutoDrive</span></div>
-      <div className="client-logo-item"><span>TeleConnect</span></div>
-      <div className="client-logo-item"><span>HospitalityPro</span></div>
-      <div className="client-logo-item"><span>DataVault</span></div>
-    </div>
-  </div>
-</section>
-
-{/*  =============================================
      FAQ SECTION
 =============================================  */}
 <section id="faq" className="section-padding" aria-label="Frequently asked questions">
@@ -1750,21 +1763,21 @@ export default function Home() {
             <div style={{'display': "flex", 'alignItems': "center", 'gap': "12px", 'background': "var(--bg)", 'border': "1px solid var(--border)", 'borderRadius': "12px", 'padding': "16px"}}>
               <span style={{'fontSize': "1.5rem"}}>⏱️</span>
               <div>
-                <div style={{'fontWeight': "700", 'color': "var(--navy)", 'fontFamily': "'Poppins',sans-serif", 'fontSize': "0.9rem"}}>2hr Response Time</div>
+                <div style={{'fontWeight': "700", 'color': "var(--navy)", 'fontFamily': "var(--font-heading)", 'fontSize': "0.9rem"}}>2hr Response Time</div>
                 <div style={{'fontSize': "0.8rem", 'color': "var(--muted)"}}>Average first response to inquiries</div>
               </div>
             </div>
             <div style={{'display': "flex", 'alignItems': "center", 'gap': "12px", 'background': "var(--bg)", 'border': "1px solid var(--border)", 'borderRadius': "12px", 'padding': "16px"}}>
               <span style={{'fontSize': "1.5rem"}}>✅</span>
               <div>
-                <div style={{'fontWeight': "700", 'color': "var(--navy)", 'fontFamily': "'Poppins',sans-serif", 'fontSize': "0.9rem"}}>Free Initial Consultation</div>
+                <div style={{'fontWeight': "700", 'color': "var(--navy)", 'fontFamily': "var(--font-heading)", 'fontSize': "0.9rem"}}>Free Initial Consultation</div>
                 <div style={{'fontSize': "0.8rem", 'color': "var(--muted)"}}>45-minute call with our expert team</div>
               </div>
             </div>
             <div style={{'display': "flex", 'alignItems': "center", 'gap': "12px", 'background': "var(--bg)", 'border': "1px solid var(--border)", 'borderRadius': "12px", 'padding': "16px"}}>
               <span style={{'fontSize': "1.5rem"}}>📄</span>
               <div>
-                <div style={{'fontWeight': "700", 'color': "var(--navy)", 'fontFamily': "'Poppins',sans-serif", 'fontSize': "0.9rem"}}>Free Proposal</div>
+                <div style={{'fontWeight': "700", 'color': "var(--navy)", 'fontFamily': "var(--font-heading)", 'fontSize': "0.9rem"}}>Free Proposal</div>
                 <div style={{'fontSize': "0.8rem", 'color': "var(--muted)"}}>Detailed SOW within 48 hours</div>
               </div>
             </div>
@@ -1870,7 +1883,7 @@ export default function Home() {
       <div>
         <div className="section-tag" style={{'background': "rgba(255,255,255,0.06)", 'borderColor': "rgba(255,255,255,0.12)", 'color': "#38BDF8", 'marginBottom': "16px"}}><span className="tag-dot" style={{'background': "#38BDF8"}}></span>Open Positions</div>
         <h2 className="section-title animate-on-scroll animate-fade-right" style={{'color': "#fff"}}>Join Our <span style={{'background': "linear-gradient(135deg,#38BDF8,#06B6D4)", 'WebkitBackgroundClip': "text", 'WebkitTextFillColor': "transparent"}}>Growing Team</span></h2>
-        <p style={{'color': "rgba(255,255,255,0.6)", 'marginBottom': "32px"}} className="animate-on-scroll animate-fade-right delay-100">Be part of a team building the future of enterprise technology. We're always looking for passionate, talented professionals.</p>
+        <p style={{'color': "rgba(255,255,255,0.6)", 'marginBottom': "32px"}} className="animate-on-scroll animate-fade-right delay-100">Be part of a team building the future of enterprise technology. We&apos;re always looking for passionate, talented professionals.</p>
 
         <div className="job-cards animate-on-scroll animate-fade-right delay-200">
           <div className="job-card" id="job-1">
@@ -1950,7 +1963,7 @@ export default function Home() {
       {/*  Right: CTA + Benefits  */}
       <div className="careers-cta-content animate-on-scroll animate-fade-left delay-200">
         <div style={{'background': "rgba(255,255,255,0.04)", 'border': "1px solid rgba(255,255,255,0.08)", 'borderRadius': "20px", 'padding': "36px", 'marginBottom': "24px"}}>
-          <h3 style={{'color': "#fff", 'fontFamily': "'Poppins',sans-serif", 'fontSize': "1.4rem", 'marginBottom': "12px"}}>Life at Praitunova Infotech</h3>
+          <h3 style={{'color': "#fff", 'fontFamily': "var(--font-heading)", 'fontSize': "1.4rem", 'marginBottom': "12px"}}>Life at Praitunova Infotech</h3>
           <p style={{'color': "rgba(255,255,255,0.6)", 'fontSize': "0.9rem", 'lineHeight': "1.7", 'marginBottom': "24px"}}>We foster a culture of innovation, continuous learning, and collaboration. Our team members grow their careers while solving enterprise challenges that matter.</p>
 
           <div className="benefits-grid">
@@ -2020,7 +2033,7 @@ export default function Home() {
   <div className="container">
     <div className="section-header center animate-on-scroll animate-fade-up">
       <div className="section-tag"><span className="tag-dot"></span>Get In Touch</div>
-      <h2 className="section-title">Let's Build Something <span>Great Together</span></h2>
+      <h2 className="section-title">Let&apos;s Build Something <span>Great Together</span></h2>
       <p className="section-subtitle">Ready to transform your business? Our team of enterprise experts is ready to listen, understand, and deliver solutions that matter.</p>
     </div>
 
@@ -2028,7 +2041,7 @@ export default function Home() {
       {/*  Left: Info  */}
       <div className="contact-info animate-on-scroll animate-fade-right">
         <h3>Contact Information</h3>
-        <p>Reach out to our team and we'll get back to you within 2 business hours with a tailored response to your inquiry.</p>
+        <p>Reach out to our team and we&apos;ll get back to you within 2 business hours with a tailored response to your inquiry.</p>
 
         <div className="contact-details">
           <div className="contact-detail-item">
@@ -2042,14 +2055,14 @@ export default function Home() {
             <div className="contact-detail-icon">📧</div>
             <div className="contact-detail-text">
               <label>Email</label>
-              <p>info@praitunovainfotech.com<br />sales@praitunovainfotech.com</p>
+              <p><a href="mailto:Enquiry@Praitunova.com">Enquiry@Praitunova.com</a></p>
             </div>
           </div>
           <div className="contact-detail-item">
             <div className="contact-detail-icon">📞</div>
             <div className="contact-detail-text">
               <label>Phone</label>
-              <p>+91 98769 92283<br />+91 80 1234 5678</p>
+              <p><a href="tel:+919082110849">+91 90821 10849</a></p>
             </div>
           </div>
           <div className="contact-detail-item">
@@ -2088,7 +2101,7 @@ export default function Home() {
             </div>
             <div className="form-group">
               <label htmlFor="contact-phone">Phone Number</label>
-              <input type="tel" id="contact-phone" name="phone" placeholder="+91 98769 92283" autoComplete="tel" />
+              <input type="tel" id="contact-phone" name="phone" placeholder="+91 90821 10849" autoComplete="tel" />
             </div>
             <div className="form-group full">
               <label htmlFor="contact-service">Service Interested In</label>
@@ -2123,6 +2136,11 @@ export default function Home() {
               <textarea id="contact-message" name="message" placeholder="Tell us about your project, requirements, timeline, and budget..." required></textarea>
             </div>
           </div>
+          {/* Honeypot spam trap — hidden from real users, bots tend to fill every field in */}
+          <div aria-hidden="true" style={{ position: 'absolute', left: '-9999px', width: '1px', height: '1px', overflow: 'hidden' }}>
+            <label htmlFor="contact-website">Website</label>
+            <input type="text" id="contact-website" name="website" tabIndex="-1" autoComplete="off" />
+          </div>
           <button type="submit" className="btn btn-primary form-submit" id="contact-submit-btn">
             Send Message
             <svg className="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/></svg>
@@ -2142,7 +2160,7 @@ export default function Home() {
       {/*  Brand  */}
       <div className="footer-brand">
         <div style={{'display': "flex", 'alignItems': "center", 'gap': "10px", 'marginBottom': "16px"}}>
-          <img src="assets/logo.jpeg" alt="Praitunova Infotech Logo" style={{'width': "60px", 'height': "60px", 'objectFit': "contain", 'marginBottom': "0"}} loading="lazy" />
+          <Image src="/assets/logo.jpeg" alt="Praitunova Infotech Logo" width={60} height={60} style={{'width': "60px", 'height': "60px", 'objectFit': "contain", 'marginBottom': "0"}} loading="lazy" />
           <div>
             <h3 style={{'margin': "0", 'fontSize': "1.1rem"}}>Praitunova Infotech</h3>
             <div style={{'fontSize': "0.65rem", 'color': "rgba(255,255,255,0.35)", 'letterSpacing': "2px", 'textTransform': "uppercase"}}>Technology &amp; Talent</div>
@@ -2175,7 +2193,6 @@ export default function Home() {
           <li><a href="#about">About Us</a></li>
           <li><a href="#why-us">Why Choose Us</a></li>
           <li><a href="#process">Our Process</a></li>
-          <li><a href="#case-studies">Case Studies</a></li>
           <li><a href="#testimonials">Testimonials</a></li>
           <li><a href="#careers">Careers</a></li>
         </ul>
@@ -2219,8 +2236,8 @@ export default function Home() {
         <div style={{'marginTop': "24px"}}>
           <h4 style={{'fontSize': "0.82rem", 'color': "rgba(255,255,255,0.6)", 'marginBottom': "12px"}}>Contact</h4>
           <div style={{'display': "flex", 'flexDirection': "column", 'gap': "8px"}}>
-            <a href="mailto:info@praitunovainfotech.com" style={{'fontSize': "0.82rem", 'color': "rgba(255,255,255,0.45)", 'display': "flex", 'alignItems': "center", 'gap': "6px"}}>📧 info@praitunovainfotech.com</a>
-            <a href="tel:+919876992283" style={{'fontSize': "0.82rem", 'color': "rgba(255,255,255,0.45)", 'display': "flex", 'alignItems': "center", 'gap': "6px"}}>📞 +91 98769 92283</a>
+            <a href="mailto:Enquiry@Praitunova.com" style={{'fontSize': "0.82rem", 'color': "rgba(255,255,255,0.45)", 'display': "flex", 'alignItems': "center", 'gap': "6px"}}>📧 Enquiry@Praitunova.com</a>
+            <a href="tel:+919082110849" style={{'fontSize': "0.82rem", 'color': "rgba(255,255,255,0.45)", 'display': "flex", 'alignItems': "center", 'gap': "6px"}}>📞 +91 90821 10849</a>
             <div style={{'fontSize': "0.82rem", 'color': "rgba(255,255,255,0.35)", 'display': "flex", 'alignItems': "center", 'gap': "6px"}}>📍 Mumbai, India</div>
           </div>
         </div>
@@ -2243,13 +2260,6 @@ export default function Home() {
 {/*  =============================================
      FLOATING BUTTONS
 =============================================  */}
-{/*  WhatsApp  */}
-<a href="https://wa.me/919876992283" className="whatsapp-btn" target="_blank" rel="noopener noreferrer" aria-label="Chat on WhatsApp" id="whatsapp-btn">
-  <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
-  </svg>
-</a>
-
 {/*  Scroll to Top  */}
 <button className="scroll-top-btn" aria-label="Scroll to top" id="scroll-top-btn">
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
@@ -2261,7 +2271,7 @@ export default function Home() {
      COOKIE CONSENT
 =============================================  */}
 <div className="cookie-banner" role="dialog" aria-label="Cookie consent" aria-modal="true" id="cookie-banner">
-  <p>We use cookies to enhance your experience, analyze site traffic, and serve personalized content. By clicking "Accept", you agree to our <a href="#">Cookie Policy</a>.</p>
+  <p>We use cookies to enhance your experience, analyze site traffic, and serve personalized content. By clicking &quot;Accept&quot;, you agree to our <a href="#">Cookie Policy</a>.</p>
   <div className="cookie-actions">
     <button className="cookie-accept" id="cookie-accept-btn">Accept All</button>
     <button className="cookie-decline" id="cookie-decline-btn">Decline</button>
