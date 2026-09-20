@@ -188,7 +188,11 @@ export default function Home() {
     const menuLinks = menu ? Array.from(menu.querySelectorAll('a')) : [];
     const closeOnOverlayClick = e => { if (e.target === menu) closeMenu(); };
 
+    const handleToggleKey = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleMenu(); }
+    };
     toggle?.addEventListener('click', toggleMenu);
+    toggle?.addEventListener('keydown', handleToggleKey);
     menuLinks.forEach(a => a.addEventListener('click', closeMenu));
     menu?.addEventListener('click', closeOnOverlayClick);
 
@@ -206,54 +210,97 @@ export default function Home() {
 
     // Form submission handling to backend API
     const form = document.getElementById('contact-form');
+    const statusEl = document.getElementById('contact-status');
     let submitCount = 0;
+    const FALLBACK = 'Enquiry@Praitunova.com or call +91 90821 10849';
+
+    const showStatus = (msg, ok = false) => {
+      if (!statusEl) return;
+      statusEl.textContent = msg;
+      statusEl.style.display = msg ? 'block' : 'none';
+      statusEl.style.color = ok ? '#059669' : '#DC2626';
+    };
+
+    // The form is noValidate (custom styling), so nothing checked the
+    // fields: an empty one went to the server and came back as a generic
+    // "Error. Try Again." with no hint what was wrong.
+    const validate = (v) => {
+      if (!v.name.trim()) return ['name', 'Please enter your full name.'];
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email.trim())) return ['email', 'Please enter a valid email address.'];
+      if (v.phone.trim().length > 20) return ['phone', 'Phone number must be 20 characters or fewer.'];
+      if (!v.message.trim()) return ['message', 'Please tell us a little about your project.'];
+      return null;
+    };
 
     const handleSubmit = async function (e) {
       e.preventDefault();
-      if (submitCount >= 3) return;
-      
-      const btn = form.querySelector('.form-submit');
-      const originalHTML = btn.innerHTML;
-      btn.disabled = true;
-      btn.innerHTML = 'Sending...';
-      
+      showStatus('');
+      if (submitCount >= 3) {
+        showStatus(`You've already sent several messages. Please email ${FALLBACK}.`);
+        return;
+      }
+
       const formData = {
-        name: form.querySelector('#contact-name')?.value,
-        email: form.querySelector('#contact-email')?.value,
-        phone: form.querySelector('#contact-phone')?.value,
-        company: form.querySelector('#contact-company')?.value,
-        service: form.querySelector('#contact-service')?.value,
-        message: form.querySelector('#contact-message')?.value,
+        name: form.querySelector('#contact-name')?.value || '',
+        email: form.querySelector('#contact-email')?.value || '',
+        phone: form.querySelector('#contact-phone')?.value || '',
+        company: form.querySelector('#contact-company')?.value || '',
+        service: form.querySelector('#contact-service')?.value || '',
+        message: form.querySelector('#contact-message')?.value || '',
         website: form.querySelector('#contact-website')?.value || '',
       };
 
+      const problem = validate(formData);
+      if (problem) {
+        showStatus(problem[1]);
+        form.querySelector(`#contact-${problem[0]}`)?.focus();
+        return;
+      }
+
+      const btn = form.querySelector('.form-submit');
+      const originalHTML = btn.innerHTML;
+      const restore = (delay) => setTimeout(() => {
+        btn.innerHTML = originalHTML;
+        btn.style.background = '';
+        btn.disabled = false;
+      }, delay);
+      btn.disabled = true;
+      btn.textContent = 'Sending...';
+
       try {
         const response = await fetch(`${API_BASE_URL}/contact/`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(formData)
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(formData),
         });
-        
+
         if (response.ok) {
-            btn.innerHTML = '<span style={{display:"inline-flex",alignItems:"center",gap:"8px"}}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12"/></svg> Sent Successfully!</span>';
-            btn.style.background = 'linear-gradient(135deg, #10B981, #059669)';
-            submitCount++;
-            setTimeout(() => {
-              btn.innerHTML = originalHTML;
-              btn.style.background = '';
-              btn.disabled = false;
-              form.reset();
-            }, 3500);
+          btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="vertical-align:-3px;margin-right:8px"><polyline points="20 6 9 17 4 12"></polyline></svg>Sent Successfully!';
+          btn.style.background = 'linear-gradient(135deg, #10B981, #059669)';
+          showStatus('Thank you! We will get back to you within 2 business hours.', true);
+          submitCount++;
+          form.reset();
+          restore(3500);
+        } else if (response.status === 429) {
+          showStatus(`Too many messages from your network. Please try again later or contact ${FALLBACK}.`);
+          restore(1500);
+        } else if (response.status === 400) {
+          let detail = '';
+          try {
+            const data = await response.json();
+            const first = Object.values(data).flat()[0];
+            if (typeof first === 'string') detail = first;
+          } catch { /* fall through to generic message */ }
+          showStatus(detail || 'Please check the form and try again.');
+          restore(1500);
         } else {
-            btn.innerHTML = 'Error. Try Again.';
-            setTimeout(() => { btn.innerHTML = originalHTML; btn.disabled = false; }, 2000);
+          showStatus(`Something went wrong on our side. Please email ${FALLBACK}.`);
+          restore(1500);
         }
       } catch (err) {
-          console.error(err);
-          btn.innerHTML = 'Network Error.';
-          setTimeout(() => { btn.innerHTML = originalHTML; btn.disabled = false; }, 2000);
+        console.error(err);
+        showStatus(`We couldn't reach the server. Check your connection, or contact ${FALLBACK}.`);
+        restore(1500);
       }
     };
     form?.addEventListener('submit', handleSubmit);
@@ -261,7 +308,7 @@ export default function Home() {
     // Modal wiring
     const modalCloseBtn = document.getElementById('svc-modal-close');
     const modalOverlay  = document.getElementById('svc-modal-overlay');
-    const handleEsc = (e) => { if (e.key === 'Escape') closeSvcModal(); };
+    const handleEsc = (e) => { if (e.key === 'Escape') { closeSvcModal(); closeMenu(); } };
     const closeOnModalOverlayClick = (e) => { if (e.target === modalOverlay) closeSvcModal(); };
 
     modalCloseBtn?.addEventListener('click', closeSvcModal);
@@ -344,6 +391,40 @@ export default function Home() {
     };
     newsletterForm?.addEventListener('submit', handleNewsletterSubmit);
 
+    // Stat counters — the markup carried target values (data-count) but
+    // no code ever animated them, so every stat sat at "0" / "0+" / "0%".
+    // Real values stay in the markup as the no-JS fallback; with JS we
+    // reset to 0 and count up when scrolled into view.
+    const counterEls = Array.from(document.querySelectorAll('[data-count]'));
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const rafIds = [];
+    const runCounter = (el) => {
+      const target = Number(el.dataset.count);
+      const suffix = el.dataset.suffix || '';
+      const duration = 1600;
+      const startTime = performance.now();
+      const tick = (now) => {
+        const progress = Math.min((now - startTime) / duration, 1);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        el.textContent = Math.round(target * eased) + suffix;
+        if (progress < 1) rafIds.push(requestAnimationFrame(tick));
+      };
+      rafIds.push(requestAnimationFrame(tick));
+    };
+    const counterObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        runCounter(entry.target);
+        counterObserver.unobserve(entry.target);
+      });
+    }, { threshold: 0.4 });
+    if (!reduceMotion) {
+      counterEls.forEach(el => {
+        el.textContent = '0' + (el.dataset.suffix || '');
+        counterObserver.observe(el);
+      });
+    }
+
     // Scroll-to-top button — CSS had a .visible state (opacity/transform)
     // and a click cursor, but nothing ever toggled it or scrolled on
     // click, so it sat permanently invisible.
@@ -382,6 +463,9 @@ export default function Home() {
     return () => {
       window.removeEventListener('scroll', handleScroll);
       toggle?.removeEventListener('click', toggleMenu);
+      toggle?.removeEventListener('keydown', handleToggleKey);
+      counterObserver.disconnect();
+      rafIds.forEach(id => cancelAnimationFrame(id));
       menuLinks.forEach(a => a.removeEventListener('click', closeMenu));
       menu?.removeEventListener('click', closeOnOverlayClick);
       observer.disconnect();
@@ -688,19 +772,19 @@ export default function Home() {
 <section id="trust-bar" aria-label="Company statistics">
   <div className="trust-bar-inner container" style={{'maxWidth': "100%", 'padding': "0"}}>
     <div className="trust-item animate-on-scroll animate-fade-up delay-100">
-      <span className="trust-number" data-count="500" data-suffix="+">0</span>
+      <span className="trust-number" data-count="500" data-suffix="+">500+</span>
       <span className="trust-label">Projects Delivered</span>
     </div>
     <div className="trust-item animate-on-scroll animate-fade-up delay-200">
-      <span className="trust-number" data-count="300" data-suffix="+">0</span>
+      <span className="trust-number" data-count="300" data-suffix="+">300+</span>
       <span className="trust-label">Happy Clients</span>
     </div>
     <div className="trust-item animate-on-scroll animate-fade-up delay-300">
-      <span className="trust-number" data-count="1000" data-suffix="+">0</span>
+      <span className="trust-number" data-count="1000" data-suffix="+">1000+</span>
       <span className="trust-label">Professionals</span>
     </div>
     <div className="trust-item animate-on-scroll animate-fade-up delay-400">
-      <span className="trust-number" data-count="15" data-suffix="+">0</span>
+      <span className="trust-number" data-count="15" data-suffix="+">15+</span>
       <span className="trust-label">Industries Served</span>
     </div>
     <div className="trust-item animate-on-scroll animate-fade-up delay-500">
@@ -708,7 +792,7 @@ export default function Home() {
       <span className="trust-label">Support Available</span>
     </div>
     <div className="trust-item animate-on-scroll animate-fade-up delay-600">
-      <span className="trust-number" data-count="8" data-suffix="+">0</span>
+      <span className="trust-number" data-count="8" data-suffix="+">8+</span>
       <span className="trust-label">Years of Experience</span>
     </div>
   </div>
@@ -946,27 +1030,27 @@ export default function Home() {
   <div className="container">
     <div className="stats-band-grid">
       <div className="stat-band-item animate-on-scroll animate-fade-up delay-100">
-        <span className="stat-band-number" data-count="98" data-suffix="%">0%</span>
+        <span className="stat-band-number" data-count="98" data-suffix="%">98%</span>
         <span className="stat-band-label">Client Retention</span>
       </div>
       <div className="stat-band-item animate-on-scroll animate-fade-up delay-200">
-        <span className="stat-band-number" data-count="50" data-suffix="+">0+</span>
+        <span className="stat-band-number" data-count="50" data-suffix="+">50+</span>
         <span className="stat-band-label">Certified Experts</span>
       </div>
       <div className="stat-band-item animate-on-scroll animate-fade-up delay-300">
-        <span className="stat-band-number" data-count="30" data-suffix="+">0+</span>
+        <span className="stat-band-number" data-count="30" data-suffix="+">30+</span>
         <span className="stat-band-label">Tech Partnerships</span>
       </div>
       <div className="stat-band-item animate-on-scroll animate-fade-up delay-400">
-        <span className="stat-band-number" data-count="5" data-suffix="★">0</span>
+        <span className="stat-band-number" data-count="5" data-suffix="★">5★</span>
         <span className="stat-band-label">Average Rating</span>
       </div>
       <div className="stat-band-item animate-on-scroll animate-fade-up delay-500">
-        <span className="stat-band-number" data-count="12" data-suffix="+">0+</span>
+        <span className="stat-band-number" data-count="12" data-suffix="+">12+</span>
         <span className="stat-band-label">Countries</span>
       </div>
       <div className="stat-band-item animate-on-scroll animate-fade-up delay-600">
-        <span className="stat-band-number" data-count="200" data-suffix="+">0+</span>
+        <span className="stat-band-number" data-count="200" data-suffix="+">200+</span>
         <span className="stat-band-label">Active Projects</span>
       </div>
     </div>
@@ -2011,10 +2095,10 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="upload-btn" role="button" id="upload-resume-btn">
+          <a className="upload-btn" href="mailto:Enquiry@Praitunova.com?subject=Job%20Application%20-%20Resume" id="upload-resume-btn">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            Upload Your Resume
-          </div>
+            Email Your Resume
+          </a>
         </div>
 
         <a href="#contact" className="btn btn-primary" style={{'width': "100%", 'justifyContent': "center"}} id="careers-contact-btn">
@@ -2089,19 +2173,19 @@ export default function Home() {
           <div className="form-grid">
             <div className="form-group">
               <label htmlFor="contact-name">Full Name *</label>
-              <input type="text" id="contact-name" name="name" placeholder="John Smith" required autoComplete="name" />
+              <input type="text" id="contact-name" name="name" placeholder="John Smith" maxLength={255} required autoComplete="name" />
             </div>
             <div className="form-group">
               <label htmlFor="contact-company">Company Name</label>
-              <input type="text" id="contact-company" name="company" placeholder="Acme Corp" autoComplete="organization" />
+              <input type="text" id="contact-company" name="company" placeholder="Acme Corp" maxLength={255} autoComplete="organization" />
             </div>
             <div className="form-group">
               <label htmlFor="contact-email">Email Address *</label>
-              <input type="email" id="contact-email" name="email" placeholder="john@company.com" required autoComplete="email" />
+              <input type="email" id="contact-email" name="email" placeholder="john@company.com" maxLength={254} required autoComplete="email" />
             </div>
             <div className="form-group">
               <label htmlFor="contact-phone">Phone Number</label>
-              <input type="tel" id="contact-phone" name="phone" placeholder="+91 90821 10849" autoComplete="tel" />
+              <input type="tel" id="contact-phone" name="phone" placeholder="+91 90821 10849" maxLength={20} autoComplete="tel" />
             </div>
             <div className="form-group full">
               <label htmlFor="contact-service">Service Interested In</label>
@@ -2133,7 +2217,7 @@ export default function Home() {
             </div>
             <div className="form-group full">
               <label htmlFor="contact-message">Message *</label>
-              <textarea id="contact-message" name="message" placeholder="Tell us about your project, requirements, timeline, and budget..." required></textarea>
+              <textarea id="contact-message" name="message" placeholder="Tell us about your project, requirements, timeline, and budget..." maxLength={5000} required></textarea>
             </div>
           </div>
           {/* Honeypot spam trap — hidden from real users, bots tend to fill every field in */}
@@ -2141,6 +2225,7 @@ export default function Home() {
             <label htmlFor="contact-website">Website</label>
             <input type="text" id="contact-website" name="website" tabIndex="-1" autoComplete="off" />
           </div>
+          <p id="contact-status" role="alert" aria-live="polite" style={{ display: 'none', margin: '0 0 14px', fontSize: '0.88rem', fontWeight: 500 }}></p>
           <button type="submit" className="btn btn-primary form-submit" id="contact-submit-btn">
             Send Message
             <svg className="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/></svg>
@@ -2246,7 +2331,7 @@ export default function Home() {
 
     {/*  Footer Bottom  */}
     <div className="footer-bottom">
-      <p>© 2025 Praitunova Infotech. All rights reserved.</p>
+      <p suppressHydrationWarning>© {new Date().getFullYear()} Praitunova Infotech. All rights reserved.</p>
       <div className="footer-bottom-links">
         <a href="#">Privacy Policy</a>
         <a href="#">Terms of Service</a>

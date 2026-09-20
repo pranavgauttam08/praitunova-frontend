@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useSyncExternalStore } from 'react';
+import { useState, useEffect, useCallback, useRef, useSyncExternalStore } from 'react';
 import { API_BASE_URL } from '../../lib/api';
 
 const API = API_BASE_URL;
@@ -35,6 +35,43 @@ function authHeaders(token) {
   return { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 }
 
+/* Authenticated fetch that survives token expiry: on a 401 it trades the
+ * stored refresh token for a new access token and retries once; only if
+ * that also fails does it sign the admin out. (Previously any expiry — every
+ * 5 minutes — just logged the admin out.) The refreshed token is written
+ * straight to storage without notifying subscribers so it doesn't retrigger
+ * the data-loading effects. */
+async function refreshAccessToken() {
+  let refresh = null;
+  try { refresh = localStorage.getItem(REFRESH_KEY); } catch { /* ignore */ }
+  if (!refresh) return null;
+  try {
+    const res = await fetch(`${API}/admin/token/refresh/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    try { localStorage.setItem(TOKEN_KEY, data.access); } catch { /* ignore */ }
+    return data.access;
+  } catch { return null; }
+}
+
+async function apiFetch(path, options = {}) {
+  const attempt = (tkn) => fetch(`${API}${path}`, {
+    ...options,
+    headers: { ...authHeaders(tkn), ...(options.headers || {}) },
+  });
+  let res = await attempt(getStoredToken());
+  if (res.status === 401) {
+    const fresh = await refreshAccessToken();
+    if (fresh) res = await attempt(fresh);
+  }
+  if (res.status === 401) setStoredToken(null);
+  return res;
+}
+
 const STATUS_COLORS = {
   NEW: { bg: '#1e40af', text: '#93c5fd', label: 'New' },
   CONTACTED: { bg: '#854d0e', text: '#fde68a', label: 'Contacted' },
@@ -58,6 +95,10 @@ function LoginScreen({ onLogin }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
       });
+      if (res.status === 429) {
+        setError('Too many sign-in attempts. Please wait an hour and try again.');
+        return;
+      }
       if (!res.ok) throw new Error('Invalid credentials');
       const data = await res.json();
       try { localStorage.setItem(REFRESH_KEY, data.refresh); } catch { /* ignore */ }
@@ -235,44 +276,70 @@ export default function AdminDashboard() {
   const token = useSyncExternalStore(subscribeToken, getStoredToken, () => null);
   const [stats, setStats]       = useState(null);
   const [inquiries, setInquiries] = useState([]);
+  const [total, setTotal]       = useState(0);
+  const [page, setPage]         = useState(1);
+  const [hasMore, setHasMore]   = useState(false);
   const [selected, setSelected] = useState(null);
   const [search, setSearch]     = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [filter, setFilter]     = useState('ALL');
   const [loading, setLoading]   = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [tab, setTab]           = useState('inquiries');
+  const requestId = useRef(0);
 
-  const fetchData = useCallback(async (tkn) => {
-    if (!tkn) return;
-    setLoading(true);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const loadStats = useCallback(async () => {
     try {
-      const [statsRes, inqRes] = await Promise.all([
-        fetch(`${API}/admin/stats/`,     { headers: authHeaders(tkn) }),
-        fetch(`${API}/admin/inquiries/`, { headers: authHeaders(tkn) }),
-      ]);
-      if (statsRes.status === 401 || inqRes.status === 401) {
-        setStoredToken(null);
-        return;
-      }
-      setStats(await statsRes.json());
-      const inqData = await inqRes.json();
-      // Admin list is paginated ({count, results}); fall back to a plain
-      // array for compatibility if pagination is ever disabled.
-      setInquiries(Array.isArray(inqData) ? inqData : inqData.results ?? []);
+      const res = await apiFetch('/admin/stats/');
+      if (res.ok) setStats(await res.json());
     } catch (e) { console.error(e); }
-    finally { setLoading(false); }
   }, []);
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount/token-change is the intended behavior here; fetchData guards on `tkn` and this is a small dashboard, not worth pulling in a data-fetching library for.
-  useEffect(() => { fetchData(token); }, [token, fetchData]);
+  // The list is paginated and filtered on the server, so search/status
+  // filtering covers every inquiry, not just the page already loaded.
+  const loadInquiries = useCallback(async (pageToLoad) => {
+    const id = ++requestId.current;
+    const append = pageToLoad > 1;
+    if (append) setLoadingMore(true); else setLoading(true);
+    try {
+      const params = new URLSearchParams({ page: String(pageToLoad) });
+      if (filter !== 'ALL') params.set('status', filter);
+      if (debouncedSearch) params.set('q', debouncedSearch);
+      const res = await apiFetch(`/admin/inquiries/?${params}`);
+      if (!res.ok || id !== requestId.current) return;
+      const data = await res.json();
+      const rows = data.results ?? [];
+      setInquiries(prev => (append ? [...prev, ...rows] : rows));
+      setTotal(data.count ?? rows.length);
+      setPage(pageToLoad);
+      setHasMore(Boolean(data.next));
+    } catch (e) { console.error(e); }
+    finally {
+      if (id === requestId.current) { setLoading(false); setLoadingMore(false); }
+    }
+  }, [filter, debouncedSearch]);
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount/filter-change is the intended behavior; loadInquiries ignores stale responses.
+  useEffect(() => { if (token) { loadInquiries(1); loadStats(); } }, [token, loadInquiries, loadStats]);
+
+  function refresh() {
+    loadStats();
+    loadInquiries(1);
+  }
 
   async function updateStatus(id, newStatus) {
-    await fetch(`${API}/admin/inquiries/${id}/`, {
+    const res = await apiFetch(`/admin/inquiries/${id}/`, {
       method: 'PATCH',
-      headers: authHeaders(token),
       body: JSON.stringify({ status: newStatus }),
     });
+    if (!res.ok) return;
     setInquiries(prev => prev.map(i => i.id === id ? { ...i, status: newStatus } : i));
-    fetchData(token); // refresh stats
+    loadStats();
   }
 
   function logout() {
@@ -281,15 +348,7 @@ export default function AdminDashboard() {
 
   if (!token) return <LoginScreen onLogin={setStoredToken} />;
 
-  const filtered = inquiries.filter(i => {
-    const matchesSearch = search === '' ||
-      i.name.toLowerCase().includes(search.toLowerCase()) ||
-      i.email.toLowerCase().includes(search.toLowerCase()) ||
-      (i.service || '').toLowerCase().includes(search.toLowerCase()) ||
-      (i.company || '').toLowerCase().includes(search.toLowerCase());
-    const matchesFilter = filter === 'ALL' || i.status === filter;
-    return matchesSearch && matchesFilter;
-  });
+  const filtered = inquiries;
 
   const s = { color: 'white', fontFamily: "var(--font-body)" };
 
@@ -311,7 +370,7 @@ export default function AdminDashboard() {
           </div>
         </div>
         <div className="admin-topnav-actions" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <button onClick={() => fetchData(token)} style={{
+          <button onClick={refresh} style={{
             background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
             borderRadius: 8, padding: '6px 14px', color: 'rgba(255,255,255,0.7)', cursor: 'pointer', fontSize: '0.82rem'
           }}>🔄 Refresh</button>
@@ -373,7 +432,7 @@ export default function AdminDashboard() {
               {/* Table Header */}
               <div className="admin-table-header" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '20px 24px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
                 <h2 style={{ color: '#fff', fontSize: '1rem', fontWeight: 700, margin: 0, flex: 1 }}>
-                  Client Inquiries <span style={{ color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>({filtered.length})</span>
+                  Client Inquiries <span style={{ color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>({total})</span>
                 </h2>
                 <input
                   type="text" placeholder="Search name, email, service…" value={search}
@@ -416,6 +475,21 @@ export default function AdminDashboard() {
                       ))}
                     </tbody>
                   </table>
+                </div>
+              )}
+
+              {!loading && filtered.length > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', padding: '14px 24px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                  <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.8rem' }}>
+                    Showing {filtered.length} of {total}
+                  </span>
+                  {hasMore && (
+                    <button onClick={() => loadInquiries(page + 1)} disabled={loadingMore} style={{
+                      background: 'rgba(37,99,235,0.2)', border: '1px solid rgba(37,99,235,0.4)', color: '#93c5fd',
+                      borderRadius: 8, padding: '8px 16px', fontSize: '0.82rem', fontWeight: 600,
+                      cursor: loadingMore ? 'not-allowed' : 'pointer', opacity: loadingMore ? 0.6 : 1
+                    }}>{loadingMore ? 'Loading…' : 'Load more'}</button>
+                  )}
                 </div>
               )}
             </div>
