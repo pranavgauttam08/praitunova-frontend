@@ -2169,7 +2169,7 @@ export default function Home() {
       {/*  Right: Form  */}
       <div className="contact-form-wrapper animate-on-scroll animate-fade-left delay-200">
         <h3 className="form-title">Send Us a Message</h3>
-        <form id="contact-form" noValidate>
+        <form id="contact-form" method="post" noValidate>
           <div className="form-grid">
             <div className="form-group">
               <label htmlFor="contact-name">Full Name *</label>
@@ -2313,7 +2313,7 @@ export default function Home() {
       <div className="footer-col">
         <h4>Stay Updated</h4>
         <p className="newsletter-title">Subscribe for technology insights, industry news, and company updates.</p>
-        <form className="newsletter-form" id="newsletter-form" noValidate>
+        <form className="newsletter-form" id="newsletter-form" method="post" noValidate>
           <input className="newsletter-input" type="email" placeholder="Your email address" aria-label="Email for newsletter" required />
           <button className="newsletter-btn" type="submit" id="newsletter-submit-btn">Subscribe</button>
         </form>
